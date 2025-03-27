@@ -402,6 +402,14 @@ class Trainer(torch.distributed.checkpoint.stateful.Stateful):
     @record
     def train(self):
         job_config = self.job_config
+        
+        start_events = [torch.cuda.Event(enable_timing=True) for _ in range(job_config.training.steps)]
+        end_events = [torch.cuda.Event(enable_timing=True) for _ in range(job_config.training.steps)]
+        batch_sizes = []
+        seq_lens = []
+        mems_active_peak = []
+        mems_reserved_peak = []
+        
         with maybe_enable_profiling(
             job_config, global_step=self.step
         ) as torch_profiler, maybe_enable_memory_snapshot(
@@ -412,7 +420,20 @@ class Trainer(torch.distributed.checkpoint.stateful.Stateful):
                 self.step += 1
                 self.gc_handler.run(self.step)
                 inputs, labels = self.next_batch(data_iterator)
+                
+                batch_sizes.append(inputs.shape[0])
+                seq_lens.append(inputs.shape[1])
+                start_events[self.step -1].record()
+                
                 self.train_step(inputs, labels)
+                
+                end_events[self.step -1].record()
+                mem_stats = torch.cuda.memory_stats()
+                mems_active_peak.append(mem_stats["active_bytes.all.peak"])
+                mems_reserved_peak.append(mem_stats["reserved_bytes.all.peak"])
+                torch.cuda.reset_accumulated_memory_stats()
+                torch.cuda.reset_peak_memory_stats()
+                
                 self.checkpointer.save(
                     self.step, force=(self.step == job_config.training.steps)
                 )
@@ -436,6 +457,25 @@ class Trainer(torch.distributed.checkpoint.stateful.Stateful):
         if torch.distributed.get_rank() == 0:
             logger.info("Sleeping 2 seconds for other ranks to complete")
             time.sleep(2)
+
+        file_name = f"{job_config.model.name}_{job_config.model.flavor}_{job_config.pipeline_parallel_schedule}_{job_config.training.pipeline_parallel_degree}"
+        rank = int(os.environ['RANK'])
+        world_size = int(os.environ["WORLD_SIZE"])
+        ac_mode = job_config.activation_checkpoint.mode
+        num_stages = job_config.pipeline_parallel_degree
+        schedule = job_config.pipeline_parallel_schedule
+        out_file = f"{file_name}_{world_size}_{rank}.txt"
+        fout = open(os.path.join(job_config.job.dump_folder, out_file), "a")
+
+        for i in range(5, 15):
+            batch_size = batch_sizes[i]
+            seq_len = seq_lens[i]
+            iter_time = start_events[i].elapsed_time(end_events[i])
+            mem_active_peak = mems_active_peak[i]
+            mem_reserved_peak = mems_reserved_peak[i]
+            fout.write(f"{batch_size},{seq_len},{ac_mode},{num_stages},{schedule},{iter_time},{mem_active_peak},{mem_reserved_peak}\n")
+        fout.flush()
+        fout.close()
 
         self.metrics_processor.close()
         logger.info("Training completed")

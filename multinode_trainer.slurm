@@ -1,63 +1,47 @@
 #!/bin/bash
-# Copyright (c) Meta Platforms, Inc. and affiliates.
-# All rights reserved.
 
-# This source code is licensed under the BSD-style license found in the
-# LICENSE file in the root directory of this source tree.
+#SBATCH --job-name=torchtitan
+#SBATCH --partition=seas_gpu,gpu
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=1
+#SBATCH --cpus-per-task=16
+#SBATCH --gres=gpu:nvidia_h100_80gb_hbm3:4
+#SBATCH --time=00:15:00
+#SBATCH --mem=64gb
+#SBATCH --output=/n/netscratch/idreos_lab/Lab/sboulware/torchtitan/job_logs/%x_%j.out
+#SBATCH --error=/n/netscratch/idreos_lab/Lab/sboulware/torchtitan/job_logs/%x_%j.err
+#SBATCH --open-mode=append
+#SBATCH --chdir=/n/netscratch/idreos_lab/Lab/sboulware/torchtitan
 
-# --- This script is optimized for AWS with EFA
-# --- adjust NCCL_BUFFSIZE if you encounter memory
-# --- constraint issues or to tune for improved performance.
-# ---
-
-#SBATCH --job-name=torchtitan_multi_node
-
-#SBATCH --ntasks=4
-
-#SBATCH --nodes=4
-
-#SBATCH --gpus-per-task=8
-
-#SBATCH --cpus-per-task=96
-
-#SBATCH --partition=train
-
+scontrol show job $SLURM_JOB_ID
 
 nodes=( $( scontrol show hostnames $SLURM_JOB_NODELIST ) )
 nodes_array=($nodes)
 head_node=${nodes_array[0]}
 head_node_ip=$(srun --nodes=1 --ntasks=1 -w "$head_node" hostname --ip-address)
-
 echo Node IP: $head_node_ip
-export LOGLEVEL=INFO
-# Enable for A100
-export FI_PROVIDER="efa"
-# Ensure that P2P is available
-# export NCCL_P2P_DISABLE=1
-export NCCL_IB_DISABLE=1
 
-# debugging flags (optional)
-export NCCL_DEBUG=WARN
-export PYTHONFAULTHANDLER=1
-# optional debug settings
-# export NCCL_DEBUG=INFO
-# NCCL_DEBUG_SUBSYS=INIT,GRAPH,ENV
+export NCCL_DEBUG=INFO
+export NCCL_SOCKET_IFNAME="ib0,em4"
 
-export LD_LIBRARY_PATH=/opt/amazon/efa/lib:$LD_LIBRARY_PATH
-export LD_LIBRARY_PATH=/usr/local/lib/:$LD_LIBRARY_PATH
-export CUDA_LAUNCH_BLOCKING=0
+GPUS_PER_NODE=4
+echo "GPUS_PER_NODE: $GPUS_PER_NODE"
+echo "SLURM_NNODES: $SLURM_NNODES"
 
-# on your cluster you might need these:
-# set the network interface
-export NCCL_SOCKET_IFNAME="eth0,en,eth,em,bond"
-export NCCL_BUFFSIZE=2097152
-#export TORCH_DIST_INIT_BARRIER=1
-export FI_EFA_SET_CUDA_SYNC_MEMOPS=0
+CONFIG_FILE=${CONFIG_FILE:-"./torchtitan/models/llama/train_configs/debug_model.toml"}
 
-CONFIG_FILE=${CONFIG_FILE:-"./torchtitan/models/llama/train_configs/llama3_8b.toml"}
+LOG_RANK=${LOG_RANK:-0}
 
-dcgmi profile --pause
-# adjust sbatch --ntasks and sbatch --nodes above and --nnodes below
-# to your specific node count, and update target launch file.
-srun torchrun --nnodes 4 --nproc_per_node 8 --rdzv_id 101 --rdzv_backend c10d --rdzv_endpoint "$head_node_ip:29500" ./torchtitan/train.py --job.config_file ${CONFIG_FILE}
-dcgmi profile --resume
+TORCHFT_LIGHTHOUSE=${TORCHFT_LIGHTHOUSE:-"${head_node_ip}:29510"}
+
+PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"
+
+srun --output job_logs/%x_%j_%t.out --error job_logs/%x_%j_%t.err torchrun \
+      --nnodes ${SLURM_NNODES} \
+      --nproc_per_node ${GPUS_PER_NODE} \
+      --rdzv_id 101 \
+      --rdzv_backend c10d \
+      --rdzv_endpoint "${head_node_ip}:29500" \
+      --local-ranks-filter ${LOG_RANK} --role rank --tee 3 \
+      -m torchtitan.train --job.config_file ${CONFIG_FILE}
+ 

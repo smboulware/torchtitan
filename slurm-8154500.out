@@ -1,0 +1,12 @@
++ NGPU=4
++ LOG_RANK=0
++ CONFIG_FILE=./torchtitan/models/llama/train_configs/debug_model.toml
++ overrides=
++ '[' 0 -ne 0 ']'
++ TORCHFT_LIGHTHOUSE=http://localhost:29510
++ PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
++ TORCHFT_LIGHTHOUSE=http://localhost:29510
++ torchrun --nproc_per_node=4 --rdzv_backend c10d --rdzv_endpoint=localhost:0 --local-ranks-filter 0 --role rank --tee 3 -m torchtitan.train --job.config_file ./torchtitan/models/llama/train_configs/debug_model.toml
+/var/slurmd/spool/slurmd/job8154500/slurm_script: line 28: 1315714 Killed                  PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True" TORCHFT_LIGHTHOUSE=${TORCHFT_LIGHTHOUSE} torchrun --nproc_per_node=${NGPU} --rdzv_backend c10d --rdzv_endpoint="localhost:0" --local-ranks-filter ${LOG_RANK} --role rank --tee 3 -m torchtitan.train --job.config_file ${CONFIG_FILE} $overrides
+slurmstepd: error: *** JOB 8154500 ON holy7c24208 CANCELLED AT 2025-03-27T01:05:10 DUE TO TIME LIMIT ***
+slurmstepd: error: Detected 1 oom_kill event in StepId=8154500.batch. Some of the step tasks have been OOM Killed.
