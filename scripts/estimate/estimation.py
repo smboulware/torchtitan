@@ -352,6 +352,10 @@ class FakeTrainer(torch.distributed.checkpoint.stateful.Stateful):
             f"One of the estimations (memory_estimation/runtime_estimation) must be enabled."
         )
         
+        start_events = [torch.cuda.Event(enable_timing=True) for _ in range(job_config.training.steps)]
+        end_events = [torch.cuda.Event(enable_timing=True) for _ in range(job_config.training.steps)]
+        mems_active_peak = []
+
         if job_config.memory_estimation.enabled:
             if self.parallel_dims.dp_shard_enabled:
                 # TODO: Handle multiple model parts
@@ -367,7 +371,17 @@ class FakeTrainer(torch.distributed.checkpoint.stateful.Stateful):
                 self.step += 1
                 self.gc_handler.run(self.step)
                 inputs, labels = self.next_batch()
+                
+                start_events[self.step -1].record()
+                
                 self.train_step(inputs, labels)
+                
+                end_events[self.step -1].record()
+                mem_stats = torch.cuda.memory_stats()
+                mems_active_peak.append(mem_stats["active_bytes.all.peak"])
+                torch.cuda.reset_accumulated_memory_stats()
+                torch.cuda.reset_peak_memory_stats()                
+                
                 if self.step == 1 and job_config.memory_estimation.enabled:
                     self.estimator.reset_mod_stats()  # iter 0 does not have optimizer state
 
@@ -375,7 +389,28 @@ class FakeTrainer(torch.distributed.checkpoint.stateful.Stateful):
             self.estimator.display_modulewise_snapshots(depth=3, units="MiB", tabulate=True)
         else:
             self.estimator.display_modulewise_stats(depth=3)
+            
+        dev = torch.device(torch.cuda.current_device())
+        tracker_peak = self.estimator.get_tracker_snapshot("peak")[dev]["Total"] if job_config.memory_estimation.enabled else self.estimator.total_runtime
+            
+        file_name = f"{job_config.model.name}_{job_config.model.flavor}_{job_config.parallelism.pipeline_parallel_schedule}_{job_config.parallelism.pipeline_parallel_degree}"
+        num_stages = job_config.parallelism.pipeline_parallel_degree
+        schedule = job_config.parallelism.pipeline_parallel_schedule
+        tracktype = "memory" if job_config.memory_estimation.enabled else "runtime"
+        out_file = f"{file_name}_{tracktype}.txt"
+        fout = open(os.path.join(job_config.job.dump_folder, out_file), "a")
 
+        for i in range(0, 1):
+            batch_size = job_config.training.batch_size
+            seq_len = job_config.training.seq_len
+            iter_time = start_events[i].elapsed_time(end_events[i])
+            mem_active_peak = mems_active_peak[i]
+            stage = self.world_mesh["pp"].get_local_rank()
+            real_val = mem_active_peak if job_config.memory_estimation.enabled else iter_time
+            fout.write(f"{schedule},{batch_size},{seq_len},{stage},{real_val},{tracker_peak}\n")
+        fout.flush()
+        fout.close()
+        
         if torch.distributed.get_rank() == 0:
             logger.info("Sleeping 2 seconds for other ranks to complete")
             time.sleep(2)

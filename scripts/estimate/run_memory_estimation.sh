@@ -24,7 +24,7 @@ CONFIG_FILE=${CONFIG_FILE:-"./torchtitan/models/llama/train_configs/debug_model.
 BATCH_SIZES=(8 8 16 16)
 SEQ_LENS=(1024 2048 1024 2048)
 NUM_STAGES=(4 4 4 4)
-DUMP_FOLDER=/n/netscratch/idreos_lab/Lab/sboulware/torchtitan/outputs/debug_model_PP_estimation
+DUMP_FOLDER=/n/netscratch/idreos_lab/Lab/sboulware/torchtitan/outputs
 SCHEDULES=(GPipe 1F1B Interleaved1F1B LoopedBFS)
 
 # Calculate WORLD_SIZE as the product of NGPU and NNODES
@@ -48,7 +48,7 @@ for ((j=0; j<4; j++)); do
         --parallelism.pipeline_parallel_degree $NUM_STAGES \
         --parallelism.pipeline_parallel_microbatches $BATCH_SIZE \
         --parallelism.pipeline_parallel_schedule $SCHEDULE \
-        --runtime_estimation.enabled \
+        --memory_estimation.enabled \
         --estimation.disable_fake_mode \
         $overrides
     
