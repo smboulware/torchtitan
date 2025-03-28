@@ -71,7 +71,7 @@ class FakeTrainer(torch.distributed.checkpoint.stateful.Stateful):
                 f"Enable only one at a time."
             )
 
-        if job_config.memory_estimation.enabled and job_config.memory_estimation.disable_fake_mode:
+        if job_config.estimation.disable_fake_mode:
             self.init_mode = nullcontext()
         else:
             self.init_mode = FakeTensorMode(allow_non_fake_inputs=True)
@@ -148,6 +148,8 @@ class FakeTrainer(torch.distributed.checkpoint.stateful.Stateful):
         model_args = self.train_spec.config[job_config.model.flavor]
         # set the model args from training job configs
         model_args.update_from_config(job_config, tokenizer)
+        if model_args.vocab_size == -1:
+            model_args.vocab_size = self.vocab_size
 
         logger.info(
             f"Building {self.train_spec.name} {job_config.model.flavor} with {model_args}"
@@ -340,7 +342,7 @@ class FakeTrainer(torch.distributed.checkpoint.stateful.Stateful):
                 pp_mesh=pp_mesh,
             )
             self.optimizers.step()
-            self.lr_schedulers.step()
+            # self.lr_schedulers.step()
             self.optimizers.zero_grad()
 
     @record
@@ -349,16 +351,18 @@ class FakeTrainer(torch.distributed.checkpoint.stateful.Stateful):
         assert job_config.memory_estimation.enabled or job_config.runtime_estimation.enabled, (
             f"One of the estimations (memory_estimation/runtime_estimation) must be enabled."
         )
+        
         if job_config.memory_estimation.enabled:
             if self.parallel_dims.dp_shard_enabled:
                 # TODO: Handle multiple model parts
                 self.estimator = FSDPMemTracker(mod=self.model_parts[0], optm=self.optimizers.optimizers[0])
             else:
                 self.estimator = MemTracker()
-                self.estimator.register_external(self.model_parts, self.optimizers.optimizers)
+                self.estimator.track_external(self.model_parts, self.optimizers.optimizers)
         else:
-            self.estimator = RuntimeEstimator()
-        with self.estimator:
+            self.estimator = RuntimeEstimator(self.world_mesh["pp"].get_local_rank())
+            self.estimator.fake_mode = self.init_mode
+        with self.estimator("operator-level-cost-model") if job_config.runtime_estimation.enabled else self.estimator:
             while self.step < job_config.training.steps:
                 self.step += 1
                 self.gc_handler.run(self.step)
@@ -406,7 +410,9 @@ if __name__ == "__main__":
 
     pp_size = config.parallelism.pipeline_parallel_degree
     try: 
-        mp.spawn(estimate, args=(pp_size, args_list), nprocs=pp_size, join=True)
+        for pp_rank in range(pp_size):
+            estimate(pp_size=pp_size, pp_rank=pp_rank, args_list=deepcopy(args_list))
+        # mp.spawn(estimate, args=(pp_size, args_list), nprocs=pp_size, join=True)
     except Exception as e:
         print(e)
         print("Unsuccessful in launching multiple processes")

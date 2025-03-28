@@ -125,6 +125,16 @@ def pipeline_llama_manual_split(
         if not is_last:
             model.norm = None
             model.output = None
+            
+        if is_first:
+            example_input = torch.randint(0, model_config.vocab_size, (int(job_config.training.batch_size / job_config.parallelism.pipeline_parallel_microbatches), job_config.training.seq_len), device="meta")
+            example_output = torch.randn(int(job_config.training.batch_size / job_config.parallelism.pipeline_parallel_microbatches), job_config.training.seq_len, model_config.dim, device="meta")
+        elif is_last:
+            example_input = torch.randn(int(job_config.training.batch_size / job_config.parallelism.pipeline_parallel_microbatches), job_config.training.seq_len, model_config.dim, device="meta")
+            example_output = torch.randn(int(job_config.training.batch_size / job_config.parallelism.pipeline_parallel_microbatches), job_config.training.seq_len, model_config.vocab_size, device="meta")
+        else:
+            example_input = torch.randn(int(job_config.training.batch_size / job_config.parallelism.pipeline_parallel_microbatches), job_config.training.seq_len, model_config.dim, device="meta")
+            example_output = torch.randn(int(job_config.training.batch_size / job_config.parallelism.pipeline_parallel_microbatches), job_config.training.seq_len, model_config.dim, device="meta")
 
         stage = PipelineStage(
             model,
@@ -132,6 +142,8 @@ def pipeline_llama_manual_split(
             num_stages,
             device,
             group=pp_mesh.get_group("pp"),
+            input_args=example_input,
+            output_args=example_output,
         )
         return stage, model
 

@@ -262,7 +262,7 @@ class JobConfig:
         self.parser.add_argument(
             "--lr_scheduler.warmup_steps",
             type=int,
-            default=200,
+            default=0,
             help="Steps for lr scheduler warmup, normally 1/5 of --training.steps",
         )
         self.parser.add_argument(
@@ -711,8 +711,14 @@ class JobConfig:
         )
 
         self.parser.add_argument(
-            "--memory_estimation.disable_fake_mode",
+            "--estimation.disable_fake_mode",
             help="Whether to estimate memory under FakeTensorMode",
+            action="store_true",
+        )
+
+        self.parser.add_argument(
+            "--runtime_estimation.enabled",
+            help="Whether to estimate runtime",
             action="store_true",
         )
 
